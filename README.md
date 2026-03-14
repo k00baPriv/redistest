@@ -5,22 +5,31 @@
 1. create the managed Redis/Valkey database
 2. wait for it to become ready
 3. configure the DB firewall
-4. optionally create a Droplet
-5. bootstrap the benchmark API on that Droplet
-6. connect the Droplet to the managed DB
+4. optionally create or update an App Platform function app
+5. connect that app to the managed DB as a trusted source
+6. expose a callable HTTPS endpoint for benchmarking
 
 Example:
 
 ```bash
 ./setup_do_redis.sh \
   --name my-redis \
-  --create-droplet \
-  --droplet-ssh-keys 123456
+  --reuse-existing \
+  --create-app-function \
+  --reuse-existing-app
 ```
 
-The script writes `REDIS_*` values and, when a Droplet is created, `DROPLET_*` and `BENCHMARK_BASE_URL` into the env file unless `--skip-env-update` is set.
+The script writes `REDIS_*` values and, when an App Platform function is created, `FUNCTION_*` values into the env file unless `--skip-env-update` is set.
+
+Important: App Platform deploys from GitHub, not from your local working tree. Push the `do_functions/` directory to GitHub before running `--create-app-function`.
 
 `redis_api.py` is a minimal HTTP service for a DigitalOcean droplet. It writes test records into your managed Redis/Valkey database and retrieves them over HTTP so you can measure latency from your own machine.
+
+`do_functions/` is the App Platform Functions project for the same benchmark flow. The function endpoint supports:
+
+- `POST /seed?count=10&payload_size=100`
+- `GET /records?count=10`
+- `GET /health`
 
 ## 1. Install dependencies on the droplet
 
@@ -66,9 +75,14 @@ Endpoints:
 ## 4. Benchmark from your computer
 
 ```bash
-python3 benchmark_droplet.py --base-url http://YOUR_DROPLET_IP:8000 --seed-first --requests 50 --count 10 --payload-size 100
+python3 benchmark_droplet.py \
+  --base-url https://YOUR_APP_DOMAIN/api/bench/redis-bench \
+  --seed-first \
+  --requests 50 \
+  --count 10 \
+  --payload-size 100
 ```
 
 This measures end-to-end latency:
 
-your computer -> droplet HTTP server -> Redis managed DB -> droplet -> your computer
+your computer -> App Platform function -> Redis managed DB -> function -> your computer

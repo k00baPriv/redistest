@@ -9,7 +9,7 @@ Usage:
 
 Creates a DigitalOcean Valkey/Redis database, waits for it to become online,
 optionally updates firewall rules, writes connection details to an env file,
-and can provision a Droplet that runs the benchmark API service.
+and can provision an App Platform function backed by a GitHub repo.
 
 Options:
   --name NAME                 Database name. Required.
@@ -18,23 +18,22 @@ Options:
   --nodes COUNT               Number of DB nodes. Default: 1
   --engine ENGINE             Database engine. Default: valkey
   --env-file PATH             Read token from and write outputs to this env file. Default: .env
-  --skip-env-update           Do not write Redis/Droplet outputs to the env file.
+  --skip-env-update           Do not write Redis/App outputs to the env file.
   --skip-ip-firewall          Do not add the current public IP to the DB firewall.
-  --app-id ID                 Add an App Platform app firewall rule.
+  --app-id ID                 Add an existing App Platform app as a DB trusted source.
   --eviction-policy POLICY    Eviction policy to apply. Default: noeviction
   --poll-interval SECONDS     Wait time between status checks. Default: 15
-  --timeout SECONDS           Max wait time for DB or Droplet readiness. Default: 1800
+  --timeout SECONDS           Max wait time for DB or app readiness. Default: 1800
   --reuse-existing            Reuse an existing DB with the same name instead of failing.
 
-Droplet options:
-  --create-droplet            Create a Droplet and deploy the benchmark API service to it.
-  --droplet-name NAME         Droplet name. Default: <db-name>-bench
-  --droplet-region REGION     Droplet region. Default: same as DB region
-  --droplet-size SIZE         Droplet size slug. Default: s-1vcpu-1gb
-  --droplet-image IMAGE       Droplet image slug. Default: ubuntu-24-04-x64
-  --droplet-ssh-keys KEYS     Comma-separated SSH key IDs or fingerprints.
-  --droplet-port PORT         API port on the droplet. Default: 8000
-  --reuse-existing-droplet    Reuse an existing Droplet with the same name instead of failing.
+App Function options:
+  --create-app-function       Create or update an App Platform function app.
+  --function-app-name NAME    App Platform app name. Default: <db-name>-fn
+  --function-repo REPO        GitHub repo in owner/name format. Default: k00baPriv/redistest
+  --function-branch BRANCH    Git branch to deploy. Default: master
+  --function-source-dir DIR   Function source dir in repo. Default: do_functions
+  --function-route PATH       Route prefix. Default: /api
+  --reuse-existing-app        Reuse an existing App Platform app with the same name.
 
   --help                      Show this help.
 
@@ -44,8 +43,8 @@ Environment:
 
 Examples:
   ./setup_do_redis.sh --name my-redis
-  ./setup_do_redis.sh --name my-redis --create-droplet --droplet-ssh-keys 123456
-  ./setup_do_redis.sh --name my-redis --region ams3 --app-id 12345678
+  ./setup_do_redis.sh --name my-redis --reuse-existing --create-app-function
+  ./setup_do_redis.sh --name my-redis --create-app-function --function-repo k00baPriv/redistest
 EOF
 }
 
@@ -91,6 +90,10 @@ api_request() {
 
 quote_for_shell() {
     printf '%q' "$1"
+}
+
+quote_for_yaml() {
+    python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1"
 }
 
 get_db_id_by_name() {
@@ -148,6 +151,123 @@ parse_uri() {
     fi
 }
 
+app_platform_region_from_db_region() {
+    python3 -c 'import re, sys; print(re.sub(r"\d+$", "", sys.argv[1]))' "$1"
+}
+
+get_app_id_by_name() {
+    local app_name=$1
+    doctl apps list --output json | python3 -c '
+import json, sys
+apps = json.load(sys.stdin)
+name = sys.argv[1]
+for app in apps:
+    spec = app.get("spec") or {}
+    if spec.get("name") == name:
+        print(app.get("id", ""))
+        break
+' "$app_name"
+}
+
+get_app_default_ingress() {
+    local app_id=$1
+    doctl apps get "$app_id" --output json | python3 -c '
+import json, sys
+app = json.load(sys.stdin)[0]
+print(app.get("default_ingress", ""))
+'
+}
+
+get_app_phase() {
+    local app_id=$1
+    doctl apps get "$app_id" --output json | python3 -c '
+import json, sys
+app = json.load(sys.stdin)[0]
+active = app.get("active_deployment") or {}
+print(active.get("phase", ""))
+'
+}
+
+wait_for_app_ready() {
+    local app_id=$1
+    local started_at
+    started_at=$(date +%s)
+
+    echo "Waiting for app deployment to become active..."
+
+    while true; do
+        local phase
+        phase=$(get_app_phase "$app_id")
+        echo "App deployment phase: ${phase:-unknown}"
+
+        if [[ "$phase" == "ACTIVE" ]]; then
+            return 0
+        fi
+
+        if [[ "$phase" == "ERROR" || "$phase" == "FAILED" || "$phase" == "CANCELED" ]]; then
+            echo "Error: app deployment finished in phase '$phase'" >&2
+            exit 1
+        fi
+
+        if (( "$(date +%s)" - started_at >= TIMEOUT_SECONDS )); then
+            echo "Error: timed out waiting for app $app_id to become active" >&2
+            exit 1
+        fi
+
+        sleep "$POLL_INTERVAL"
+    done
+}
+
+set_eviction_policy() {
+    local db_id=$1
+    local policy=$2
+    echo "Setting eviction policy to: $policy"
+    api_request PUT \
+        "https://api.digitalocean.com/v2/databases/${db_id}/eviction_policy" \
+        "{\"eviction_policy\":\"${policy}\"}" >/dev/null
+}
+
+add_current_ip_firewall() {
+    echo "Getting current public IP..."
+    local current_ip
+    current_ip=$(curl -fsS ifconfig.me)
+    echo "Adding firewall rule for IP: $current_ip"
+    doctl databases firewalls append "$DB_ID" --rule "ip_addr:${current_ip}"
+}
+
+create_app_spec() {
+    APP_SPEC_FILE=$(mktemp "${TMPDIR:-/tmp}/app-spec.XXXXXX")
+
+    local app_region
+    app_region=$(app_platform_region_from_db_region "$REGION")
+    local q_app_name q_repo q_branch q_source_dir q_route q_redis_url
+    q_app_name=$(quote_for_yaml "$FUNCTION_APP_NAME")
+    q_repo=$(quote_for_yaml "$FUNCTION_REPO")
+    q_branch=$(quote_for_yaml "$FUNCTION_BRANCH")
+    q_source_dir=$(quote_for_yaml "$FUNCTION_SOURCE_DIR")
+    q_route=$(quote_for_yaml "$FUNCTION_ROUTE")
+    q_redis_url=$(quote_for_yaml "$REDIS_URL")
+
+    cat > "$APP_SPEC_FILE" <<EOF
+name: ${q_app_name}
+region: ${app_region}
+functions:
+  - name: redis-bench
+    github:
+      repo: ${q_repo}
+      branch: ${q_branch}
+      deploy_on_push: false
+    source_dir: ${q_source_dir}
+    routes:
+      - path: ${q_route}
+    envs:
+      - key: REDIS_URL
+        scope: RUN_TIME
+        type: SECRET
+        value: ${q_redis_url}
+EOF
+}
+
 update_env_file() {
     local env_file=$1
     local tmp_file
@@ -162,10 +282,10 @@ update_env_file() {
             !/^REDIS_DB=/ &&
             !/^REDIS_SSL=/ &&
             !/^REDIS_URL=/ &&
-            !/^DROPLET_ID=/ &&
-            !/^DROPLET_NAME=/ &&
-            !/^DROPLET_IP=/ &&
-            !/^BENCHMARK_BASE_URL=/
+            !/^FUNCTION_APP_ID=/ &&
+            !/^FUNCTION_APP_NAME=/ &&
+            !/^FUNCTION_BASE_URL=/ &&
+            !/^FUNCTION_ENDPOINT=/
         ' "$env_file" > "$tmp_file"
     else
         : > "$tmp_file"
@@ -182,13 +302,13 @@ update_env_file() {
         echo "REDIS_SSL=$(quote_for_shell "$REDIS_SSL")"
         echo "REDIS_URL=$(quote_for_shell "$REDIS_URL")"
 
-        if [[ -n "$DROPLET_ID" ]]; then
+        if [[ -n "$FUNCTION_APP_ID" ]]; then
             echo ""
-            echo "# Benchmark Droplet"
-            echo "DROPLET_ID=$(quote_for_shell "$DROPLET_ID")"
-            echo "DROPLET_NAME=$(quote_for_shell "$DROPLET_NAME")"
-            echo "DROPLET_IP=$(quote_for_shell "$DROPLET_IP")"
-            echo "BENCHMARK_BASE_URL=$(quote_for_shell "$BENCHMARK_BASE_URL")"
+            echo "# App Platform Function"
+            echo "FUNCTION_APP_ID=$(quote_for_shell "$FUNCTION_APP_ID")"
+            echo "FUNCTION_APP_NAME=$(quote_for_shell "$FUNCTION_APP_NAME")"
+            echo "FUNCTION_BASE_URL=$(quote_for_shell "$FUNCTION_BASE_URL")"
+            echo "FUNCTION_ENDPOINT=$(quote_for_shell "$FUNCTION_ENDPOINT")"
         fi
     } >> "$tmp_file"
 
@@ -196,250 +316,9 @@ update_env_file() {
     echo "Updated env file: $env_file"
 }
 
-add_current_ip_firewall() {
-    echo "Getting current public IP..."
-    local current_ip
-    current_ip=$(curl -fsS ifconfig.me)
-    echo "Adding firewall rule for IP: $current_ip"
-    doctl databases firewalls append "$DB_ID" --rule "ip_addr:${current_ip}"
-}
-
-set_eviction_policy() {
-    local db_id=$1
-    local policy=$2
-    echo "Setting eviction policy to: $policy"
-    api_request PUT \
-        "https://api.digitalocean.com/v2/databases/${db_id}/eviction_policy" \
-        "{\"eviction_policy\":\"${policy}\"}" >/dev/null
-}
-
-get_droplet_id_by_name() {
-    local droplet_name=$1
-    doctl compute droplet list --format ID,Name --no-header | awk -v name="$droplet_name" '$2 == name {print $1; exit}'
-}
-
-get_droplet_status() {
-    local droplet_id=$1
-    doctl compute droplet get "$droplet_id" --format Status --no-header
-}
-
-get_droplet_ip() {
-    local droplet_id=$1
-    doctl compute droplet get "$droplet_id" --format PublicIPv4 --no-header
-}
-
-wait_for_droplet_active() {
-    local droplet_id=$1
-    local started_at
-    started_at=$(date +%s)
-
-    echo "Waiting for droplet to become active..."
-
-    while true; do
-        local status
-        status=$(get_droplet_status "$droplet_id")
-        echo "Droplet status: $status"
-
-        if [[ "$status" == "active" ]]; then
-            return 0
-        fi
-
-        if (( "$(date +%s)" - started_at >= TIMEOUT_SECONDS )); then
-            echo "Error: timed out waiting for droplet $droplet_id to become active" >&2
-            exit 1
-        fi
-
-        sleep "$POLL_INTERVAL"
-    done
-}
-
-create_droplet_user_data() {
-    USER_DATA_FILE=$(mktemp "${TMPDIR:-/tmp}/droplet-user-data.XXXXXX")
-
-    local q_redis_url q_redis_host q_redis_port q_redis_username q_redis_password q_redis_db q_redis_ssl q_port
-    q_redis_url=$(quote_for_shell "$REDIS_URL")
-    q_redis_host=$(quote_for_shell "$REDIS_HOST")
-    q_redis_port=$(quote_for_shell "$REDIS_PORT")
-    q_redis_username=$(quote_for_shell "$REDIS_USERNAME")
-    q_redis_password=$(quote_for_shell "$REDIS_PASSWORD")
-    q_redis_db=$(quote_for_shell "$REDIS_DB")
-    q_redis_ssl=$(quote_for_shell "$REDIS_SSL")
-    q_port=$(quote_for_shell "$DROPLET_PORT")
-
-    cat > "$USER_DATA_FILE" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-
-export DEBIAN_FRONTEND=noninteractive
-
-apt-get update
-apt-get install -y python3 python3-venv
-
-mkdir -p /opt/redis-bench
-
-cat > /opt/redis-bench/requirements.txt <<'REQ'
-redis>=5.0.0,<6.0.0
-REQ
-
-cat > /opt/redis-bench/redis_api.py <<'PY'
-#!/usr/bin/env python3
-
-import json
-import os
-import string
-from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
-
-import redis
-
-
-HOST = "0.0.0.0"
-PORT = int(os.getenv("API_PORT", "8000"))
-KEY_PREFIX = os.getenv("REDIS_KEY_PREFIX", "bench:item")
-DEFAULT_COUNT = int(os.getenv("SEED_COUNT", "10"))
-DEFAULT_PAYLOAD_SIZE = int(os.getenv("PAYLOAD_SIZE", "100"))
-
-
-def get_client():
-    redis_url = os.getenv("REDIS_URL")
-    if redis_url:
-        return redis.Redis.from_url(redis_url, decode_responses=True)
-
-    return redis.Redis(
-        host=os.environ["REDIS_HOST"],
-        port=int(os.getenv("REDIS_PORT", "6379")),
-        username=os.getenv("REDIS_USERNAME") or None,
-        password=os.getenv("REDIS_PASSWORD") or None,
-        db=int(os.getenv("REDIS_DB", "0")),
-        ssl=os.getenv("REDIS_SSL", "true").lower() in {"1", "true", "yes"},
-        decode_responses=True,
-    )
-
-
-REDIS = get_client()
-
-
-def make_payload(index: int, size: int):
-    alphabet = string.ascii_letters + string.digits
-    payload = "".join(alphabet[(index + offset) % len(alphabet)] for offset in range(size))
-    return {"id": index, "name": f"record-{index}", "payload": payload}
-
-
-def seed_records(count: int, payload_size: int):
-    keys = []
-    pipe = REDIS.pipeline()
-    for index in range(count):
-        key = f"{KEY_PREFIX}:{index}"
-        pipe.set(key, json.dumps(make_payload(index, payload_size), separators=(",", ":")))
-        keys.append(key)
-    pipe.execute()
-    return keys
-
-
-def fetch_records(count: int):
-    keys = [f"{KEY_PREFIX}:{index}" for index in range(count)]
-    values = REDIS.mget(keys)
-    records = []
-    for key, value in zip(keys, values):
-        if value is None:
-            records.append({"key": key, "missing": True})
-        else:
-            records.append(json.loads(value))
-    return records
-
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        if parsed.path == "/health":
-            self.send_json(HTTPStatus.OK, {"status": "ok"})
-            return
-        if parsed.path == "/records":
-            query = parse_qs(parsed.query)
-            count = int(query.get("count", [str(DEFAULT_COUNT)])[0])
-            self.send_json(HTTPStatus.OK, {"count": count, "records": fetch_records(count)})
-            return
-        self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
-
-    def do_POST(self):
-        parsed = urlparse(self.path)
-        if parsed.path == "/seed":
-            query = parse_qs(parsed.query)
-            count = int(query.get("count", [str(DEFAULT_COUNT)])[0])
-            payload_size = int(query.get("payload_size", [str(DEFAULT_PAYLOAD_SIZE)])[0])
-            keys = seed_records(count, payload_size)
-            self.send_json(HTTPStatus.CREATED, {"seeded": len(keys), "keys": keys, "payload_size": payload_size})
-            return
-        self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
-
-    def log_message(self, format, *args):
-        return
-
-    def send_json(self, status, body):
-        payload = json.dumps(body).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
-
-
-server = ThreadingHTTPServer((HOST, PORT), Handler)
-server.serve_forever()
-PY
-
-chmod +x /opt/redis-bench/redis_api.py
-
-cat > /opt/redis-bench/service.env <<ENV
-REDIS_URL=${q_redis_url}
-REDIS_HOST=${q_redis_host}
-REDIS_PORT=${q_redis_port}
-REDIS_USERNAME=${q_redis_username}
-REDIS_PASSWORD=${q_redis_password}
-REDIS_DB=${q_redis_db}
-REDIS_SSL=${q_redis_ssl}
-API_PORT=${q_port}
-ENV
-
-cat > /opt/redis-bench/run.sh <<'RUN'
-#!/usr/bin/env bash
-set -euo pipefail
-source /opt/redis-bench/service.env
-exec /opt/redis-bench/.venv/bin/python /opt/redis-bench/redis_api.py
-RUN
-
-chmod +x /opt/redis-bench/run.sh
-
-python3 -m venv /opt/redis-bench/.venv
-/opt/redis-bench/.venv/bin/pip install --no-cache-dir -r /opt/redis-bench/requirements.txt
-
-cat > /etc/systemd/system/redis-bench.service <<'UNIT'
-[Unit]
-Description=Redis benchmark API
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/redis-bench
-ExecStart=/opt/redis-bench/run.sh
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-systemctl daemon-reload
-systemctl enable redis-bench.service
-systemctl restart redis-bench.service
-EOF
-}
-
 cleanup() {
-    if [[ -n "${USER_DATA_FILE:-}" && -f "${USER_DATA_FILE:-}" ]]; then
-        rm -f "$USER_DATA_FILE"
+    if [[ -n "${APP_SPEC_FILE:-}" && -f "${APP_SPEC_FILE:-}" ]]; then
+        rm -f "$APP_SPEC_FILE"
     fi
 }
 
@@ -456,18 +335,17 @@ EVICTION_POLICY="noeviction"
 POLL_INTERVAL=15
 TIMEOUT_SECONDS=1800
 REUSE_EXISTING=false
-CREATE_DROPLET=false
-DROPLET_NAME=""
-DROPLET_REGION=""
-DROPLET_SIZE="s-1vcpu-1gb"
-DROPLET_IMAGE="ubuntu-24-04-x64"
-DROPLET_SSH_KEYS=""
-DROPLET_PORT="8000"
-REUSE_EXISTING_DROPLET=false
-DROPLET_ID=""
-DROPLET_IP=""
-BENCHMARK_BASE_URL=""
-USER_DATA_FILE=""
+CREATE_APP_FUNCTION=false
+FUNCTION_APP_NAME=""
+FUNCTION_REPO="k00baPriv/redistest"
+FUNCTION_BRANCH="master"
+FUNCTION_SOURCE_DIR="do_functions"
+FUNCTION_ROUTE="/api"
+REUSE_EXISTING_APP=false
+FUNCTION_APP_ID=""
+FUNCTION_BASE_URL=""
+FUNCTION_ENDPOINT=""
+APP_SPEC_FILE=""
 REDIS_SCHEME=""
 REDIS_SSL=""
 
@@ -527,36 +405,32 @@ while [[ $# -gt 0 ]]; do
             REUSE_EXISTING=true
             shift
             ;;
-        --create-droplet)
-            CREATE_DROPLET=true
+        --create-app-function)
+            CREATE_APP_FUNCTION=true
             shift
             ;;
-        --droplet-name)
-            DROPLET_NAME=${2:-}
+        --function-app-name)
+            FUNCTION_APP_NAME=${2:-}
             shift 2
             ;;
-        --droplet-region)
-            DROPLET_REGION=${2:-}
+        --function-repo)
+            FUNCTION_REPO=${2:-}
             shift 2
             ;;
-        --droplet-size)
-            DROPLET_SIZE=${2:-}
+        --function-branch)
+            FUNCTION_BRANCH=${2:-}
             shift 2
             ;;
-        --droplet-image)
-            DROPLET_IMAGE=${2:-}
+        --function-source-dir)
+            FUNCTION_SOURCE_DIR=${2:-}
             shift 2
             ;;
-        --droplet-ssh-keys)
-            DROPLET_SSH_KEYS=${2:-}
+        --function-route)
+            FUNCTION_ROUTE=${2:-}
             shift 2
             ;;
-        --droplet-port)
-            DROPLET_PORT=${2:-}
-            shift 2
-            ;;
-        --reuse-existing-droplet)
-            REUSE_EXISTING_DROPLET=true
+        --reuse-existing-app)
+            REUSE_EXISTING_APP=true
             shift
             ;;
         --help|-h)
@@ -577,12 +451,8 @@ if [[ -z "$DB_NAME" ]]; then
     exit 1
 fi
 
-if [[ -z "$DROPLET_NAME" ]]; then
-    DROPLET_NAME="${DB_NAME}-bench"
-fi
-
-if [[ -z "$DROPLET_REGION" ]]; then
-    DROPLET_REGION="$REGION"
+if [[ -z "$FUNCTION_APP_NAME" ]]; then
+    FUNCTION_APP_NAME="${DB_NAME}-fn"
 fi
 
 for cmd in doctl curl python3 awk; do
@@ -642,60 +512,54 @@ if [[ "$ADD_IP_FIREWALL" == true ]]; then
     add_current_ip_firewall
 fi
 
-if [[ -n "$APP_ID" ]]; then
-    echo "Adding firewall rule for app: $APP_ID"
-    doctl databases firewalls append "$DB_ID" --rule "app:${APP_ID}"
-fi
-
 REDIS_URL=$(get_db_uri "$DB_ID")
 parse_uri "$REDIS_URL"
 
-if [[ "$CREATE_DROPLET" == true ]]; then
-    EXISTING_DROPLET_ID=$(get_droplet_id_by_name "$DROPLET_NAME" || true)
+if [[ -n "$APP_ID" ]]; then
+    echo "Adding firewall rule for existing app: $APP_ID"
+    doctl databases firewalls append "$DB_ID" --rule "app:${APP_ID}"
+fi
 
-    if [[ -n "$EXISTING_DROPLET_ID" ]]; then
-        if [[ "$REUSE_EXISTING_DROPLET" == true ]]; then
-            DROPLET_ID=$EXISTING_DROPLET_ID
-            echo "Reusing existing droplet: $DROPLET_NAME ($DROPLET_ID)"
+if [[ "$CREATE_APP_FUNCTION" == true ]]; then
+    LOCAL_BRANCH=$(git branch --show-current 2>/dev/null || true)
+    if [[ -n "$LOCAL_BRANCH" && "$LOCAL_BRANCH" != "$FUNCTION_BRANCH" ]]; then
+        echo "Warning: local branch is '$LOCAL_BRANCH' but function deploy branch is '$FUNCTION_BRANCH'." >&2
+    fi
+
+    if [[ -n "$(git status --short -- do_functions 2>/dev/null)" ]]; then
+        echo "Warning: local changes under do_functions are not pushed yet." >&2
+        echo "App Platform deploys from GitHub, so push them before expecting the function build to succeed." >&2
+    fi
+
+    EXISTING_APP_ID=$(get_app_id_by_name "$FUNCTION_APP_NAME" || true)
+    create_app_spec
+
+    if [[ -n "$EXISTING_APP_ID" ]]; then
+        if [[ "$REUSE_EXISTING_APP" == true ]]; then
+            FUNCTION_APP_ID=$EXISTING_APP_ID
+            echo "Updating existing app: $FUNCTION_APP_NAME ($FUNCTION_APP_ID)"
+            doctl apps update "$FUNCTION_APP_ID" --spec "$APP_SPEC_FILE" >/dev/null
         else
-            echo "Error: droplet already exists with name '$DROPLET_NAME' (ID: $EXISTING_DROPLET_ID)" >&2
-            echo "Use --reuse-existing-droplet to use it instead of failing." >&2
+            echo "Error: app already exists with name '$FUNCTION_APP_NAME' (ID: $EXISTING_APP_ID)" >&2
+            echo "Use --reuse-existing-app to update it instead of failing." >&2
             exit 1
         fi
     else
-        create_droplet_user_data
-
-        echo "Creating droplet '$DROPLET_NAME'..."
-        droplet_create_args=(
-            compute droplet create "$DROPLET_NAME"
-            --region "$DROPLET_REGION"
-            --size "$DROPLET_SIZE"
-            --image "$DROPLET_IMAGE"
-            --user-data-file "$USER_DATA_FILE"
-            --wait
-        )
-
-        if [[ -n "$DROPLET_SSH_KEYS" ]]; then
-            droplet_create_args+=(--ssh-keys "$DROPLET_SSH_KEYS")
-        fi
-
-        doctl "${droplet_create_args[@]}" >/dev/null
-
-        DROPLET_ID=$(get_droplet_id_by_name "$DROPLET_NAME")
-        if [[ -z "$DROPLET_ID" ]]; then
-            echo "Error: droplet '$DROPLET_NAME' was not found after creation" >&2
+        echo "Creating App Platform function app '$FUNCTION_APP_NAME'..."
+        doctl apps create --spec "$APP_SPEC_FILE" >/dev/null
+        FUNCTION_APP_ID=$(get_app_id_by_name "$FUNCTION_APP_NAME")
+        if [[ -z "$FUNCTION_APP_ID" ]]; then
+            echo "Error: app '$FUNCTION_APP_NAME' was not found after creation" >&2
             exit 1
         fi
-
-        echo "Droplet created with ID: $DROPLET_ID"
     fi
 
-    wait_for_droplet_active "$DROPLET_ID"
-    DROPLET_IP=$(get_droplet_ip "$DROPLET_ID")
-    BENCHMARK_BASE_URL="http://${DROPLET_IP}:${DROPLET_PORT}"
+    wait_for_app_ready "$FUNCTION_APP_ID"
+    FUNCTION_BASE_URL=$(get_app_default_ingress "$FUNCTION_APP_ID")
+    FUNCTION_ENDPOINT="${FUNCTION_BASE_URL}${FUNCTION_ROUTE}/bench/redis-bench"
 
-    echo "Adding firewall rule for droplet: $DROPLET_ID"
-    doctl databases firewalls append "$DB_ID" --rule "droplet:${DROPLET_ID}"
+    echo "Adding firewall rule for app: $FUNCTION_APP_ID"
+    doctl databases firewalls append "$DB_ID" --rule "app:${FUNCTION_APP_ID}"
 fi
 
 echo ""
@@ -708,14 +572,14 @@ echo "REDIS_DB=$REDIS_DB"
 echo "REDIS_SSL=$REDIS_SSL"
 echo "REDIS_URL=$REDIS_URL"
 
-if [[ -n "$DROPLET_ID" ]]; then
+if [[ -n "$FUNCTION_APP_ID" ]]; then
     echo ""
-    echo "Droplet details:"
-    echo "DROPLET_ID=$DROPLET_ID"
-    echo "DROPLET_NAME=$DROPLET_NAME"
-    echo "DROPLET_IP=$DROPLET_IP"
-    echo "BENCHMARK_BASE_URL=$BENCHMARK_BASE_URL"
-    echo "Health check: ${BENCHMARK_BASE_URL}/health"
+    echo "Function app details:"
+    echo "FUNCTION_APP_ID=$FUNCTION_APP_ID"
+    echo "FUNCTION_APP_NAME=$FUNCTION_APP_NAME"
+    echo "FUNCTION_BASE_URL=$FUNCTION_BASE_URL"
+    echo "FUNCTION_ENDPOINT=$FUNCTION_ENDPOINT"
+    echo "Health check: ${FUNCTION_ENDPOINT}/health"
 fi
 
 if [[ "$UPDATE_ENV_FILE" == true ]]; then

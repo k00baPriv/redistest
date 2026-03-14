@@ -1,0 +1,10 @@
+packages:
+  - name: bench
+    functions:
+      - name: redis-bench
+        runtime: python:3.13
+        main: main
+        web: true
+        limits:
+          timeout: 10000
+          memory: 256

@@ -27,8 +27,12 @@ def percentile(values: list[float], ratio: float) -> float:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark droplet -> Redis retrieval latency")
-    parser.add_argument("--base-url", required=True, help="Example: http://203.0.113.10:8000")
+    parser = argparse.ArgumentParser(description="Benchmark HTTP endpoint -> Redis retrieval latency")
+    parser.add_argument(
+        "--base-url",
+        required=True,
+        help="Example: http://203.0.113.10:8000 or https://app.example.com/api/bench/redis-bench",
+    )
     parser.add_argument("--requests", type=int, default=50, help="Number of GET requests to send")
     parser.add_argument("--count", type=int, default=10, help="Number of records to fetch each time")
     parser.add_argument("--seed-first", action="store_true", help="Seed records before benchmarking")
