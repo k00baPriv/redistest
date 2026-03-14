@@ -4,15 +4,15 @@ import string
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-import redis
-
 
 KEY_PREFIX = os.getenv("REDIS_KEY_PREFIX", "bench:item")
 DEFAULT_COUNT = int(os.getenv("SEED_COUNT", "10"))
 DEFAULT_PAYLOAD_SIZE = int(os.getenv("PAYLOAD_SIZE", "100"))
 
 
-def get_redis_client() -> redis.Redis:
+def get_redis_client():
+    import redis
+
     redis_url = os.getenv("REDIS_URL")
     if redis_url:
         return redis.Redis.from_url(redis_url, decode_responses=True)
@@ -38,9 +38,6 @@ def get_redis_client() -> redis.Redis:
     )
 
 
-REDIS = get_redis_client()
-
-
 def response(status_code: int, body: dict[str, Any]) -> dict[str, Any]:
     return {
         "statusCode": status_code,
@@ -60,8 +57,9 @@ def make_payload(index: int, size: int) -> dict[str, Any]:
 
 
 def seed_records(count: int, payload_size: int) -> list[str]:
+    redis_client = get_redis_client()
     keys = []
-    pipe = REDIS.pipeline()
+    pipe = redis_client.pipeline()
 
     for index in range(count):
         key = f"{KEY_PREFIX}:{index}"
@@ -73,8 +71,9 @@ def seed_records(count: int, payload_size: int) -> list[str]:
 
 
 def fetch_records(count: int) -> list[dict[str, Any]]:
+    redis_client = get_redis_client()
     keys = [f"{KEY_PREFIX}:{index}" for index in range(count)]
-    raw_values = REDIS.mget(keys)
+    raw_values = redis_client.mget(keys)
     records = []
 
     for key, raw_value in zip(keys, raw_values):
@@ -139,7 +138,7 @@ def main(event: dict[str, Any], context: Any) -> dict[str, Any]:
         action = params.get("action", "").lower()
 
         if action == "health" or path.endswith("/health"):
-            return response(200, {"status": "ok"})
+            return response(200, {"status": "ok", "path": path, "action": action or None})
 
         if action == "seed" or method == "POST" or path.endswith("/seed"):
             count = as_int(params, "count", DEFAULT_COUNT)
