@@ -27,9 +27,9 @@ Important: App Platform deploys from GitHub, not from your local working tree. P
 
 `do_functions/` is the App Platform Functions project for the same benchmark flow. The function endpoint supports:
 
-- `POST /seed?count=10&payload_size=100`
-- `GET /records?count=10`
-- `GET /health`
+- `GET ?action=seed&count=10&payload_size=100`
+- `GET ?action=records&count=10`
+- `GET ?action=health`
 
 ## 1. Install dependencies on the droplet
 

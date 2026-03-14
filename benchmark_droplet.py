@@ -43,8 +43,8 @@ def main() -> None:
 
     if args.seed_first:
         seeded = request(
-            f"{base_url}/seed?count={args.count}&payload_size={args.payload_size}",
-            method="POST",
+            f"{base_url}?action=seed&count={args.count}&payload_size={args.payload_size}",
+            method="GET",
         )
         print(f"Seeded: {seeded['seeded']} records")
 
@@ -53,7 +53,7 @@ def main() -> None:
 
     for _ in range(args.requests):
         started = time.perf_counter()
-        response = request(f"{base_url}/records?count={args.count}", method="GET")
+        response = request(f"{base_url}?action=records&count={args.count}", method="GET")
         elapsed_ms = (time.perf_counter() - started) * 1000
         samples_ms.append(elapsed_ms)
         response_size_bytes = len(json.dumps(response).encode("utf-8"))

@@ -136,11 +136,12 @@ def main(event: dict[str, Any], context: Any) -> dict[str, Any]:
         method = get_method(event)
         path = get_path(event)
         params = get_query_params(event)
+        action = params.get("action", "").lower()
 
-        if path.endswith("/health"):
+        if action == "health" or path.endswith("/health"):
             return response(200, {"status": "ok"})
 
-        if method == "POST" or path.endswith("/seed"):
+        if action == "seed" or method == "POST" or path.endswith("/seed"):
             count = as_int(params, "count", DEFAULT_COUNT)
             payload_size = as_int(params, "payload_size", DEFAULT_PAYLOAD_SIZE)
             keys = seed_records(count, payload_size)

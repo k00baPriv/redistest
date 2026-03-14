@@ -29,7 +29,8 @@ Options:
 App Function options:
   --create-app-function       Create or update an App Platform function app.
   --function-app-name NAME    App Platform app name. Default: <db-name>-fn
-  --function-repo REPO        GitHub repo in owner/name format. Default: k00baPriv/redistest
+  --function-repo REPO        Repo in owner/name format. Default: k00baPriv/redistest
+  --function-git-url URL      Public git clone URL. Default: https://github.com/k00baPriv/redistest.git
   --function-branch BRANCH    Git branch to deploy. Default: master
   --function-source-dir DIR   Function source dir in repo. Default: do_functions
   --function-route PATH       Route prefix. Default: /api
@@ -44,7 +45,7 @@ Environment:
 Examples:
   ./setup_do_redis.sh --name my-redis
   ./setup_do_redis.sh --name my-redis --reuse-existing --create-app-function
-  ./setup_do_redis.sh --name my-redis --create-app-function --function-repo k00baPriv/redistest
+  ./setup_do_redis.sh --name my-redis --create-app-function --function-git-url https://github.com/k00baPriv/redistest.git
 EOF
 }
 
@@ -240,9 +241,9 @@ create_app_spec() {
 
     local app_region
     app_region=$(app_platform_region_from_db_region "$REGION")
-    local q_app_name q_repo q_branch q_source_dir q_route q_redis_url
+    local q_app_name q_git_url q_branch q_source_dir q_route q_redis_url
     q_app_name=$(quote_for_yaml "$FUNCTION_APP_NAME")
-    q_repo=$(quote_for_yaml "$FUNCTION_REPO")
+    q_git_url=$(quote_for_yaml "$FUNCTION_GIT_URL")
     q_branch=$(quote_for_yaml "$FUNCTION_BRANCH")
     q_source_dir=$(quote_for_yaml "$FUNCTION_SOURCE_DIR")
     q_route=$(quote_for_yaml "$FUNCTION_ROUTE")
@@ -253,10 +254,9 @@ name: ${q_app_name}
 region: ${app_region}
 functions:
   - name: redis-bench
-    github:
-      repo: ${q_repo}
+    git:
+      repo_clone_url: ${q_git_url}
       branch: ${q_branch}
-      deploy_on_push: false
     source_dir: ${q_source_dir}
     routes:
       - path: ${q_route}
@@ -338,6 +338,7 @@ REUSE_EXISTING=false
 CREATE_APP_FUNCTION=false
 FUNCTION_APP_NAME=""
 FUNCTION_REPO="k00baPriv/redistest"
+FUNCTION_GIT_URL="https://github.com/k00baPriv/redistest.git"
 FUNCTION_BRANCH="master"
 FUNCTION_SOURCE_DIR="do_functions"
 FUNCTION_ROUTE="/api"
@@ -415,6 +416,11 @@ while [[ $# -gt 0 ]]; do
             ;;
         --function-repo)
             FUNCTION_REPO=${2:-}
+            FUNCTION_GIT_URL="https://github.com/${FUNCTION_REPO}.git"
+            shift 2
+            ;;
+        --function-git-url)
+            FUNCTION_GIT_URL=${2:-}
             shift 2
             ;;
         --function-branch)
