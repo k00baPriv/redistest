@@ -35,6 +35,7 @@ App Function options:
   --function-source-dir DIR   Function source dir in repo. Default: do_functions
   --function-route PATH       Route prefix. Default: /api
   --reuse-existing-app        Reuse an existing App Platform app with the same name.
+  --recreate-existing-app     Delete and recreate an existing App Platform app with the same name.
 
   --help                      Show this help.
 
@@ -177,6 +178,36 @@ import json, sys
 app = json.load(sys.stdin)[0]
 print(app.get("default_ingress", ""))
 '
+}
+
+delete_app_and_wait() {
+    local app_id=$1
+    local started_at
+    started_at=$(date +%s)
+
+    echo "Deleting existing app: $app_id"
+    doctl apps delete "$app_id" --force >/dev/null
+
+    while true; do
+        if [[ -z "$(doctl apps list --output json | python3 -c '
+import json, sys
+target = sys.argv[1]
+apps = json.load(sys.stdin)
+for app in apps:
+    if app.get("id") == target:
+        print(target)
+        break
+' "$app_id")" ]]; then
+            return 0
+        fi
+
+        if (( "$(date +%s)" - started_at >= TIMEOUT_SECONDS )); then
+            echo "Error: timed out waiting for app $app_id to be deleted" >&2
+            exit 1
+        fi
+
+        sleep "$POLL_INTERVAL"
+    done
 }
 
 get_app_phase() {
@@ -343,6 +374,7 @@ FUNCTION_BRANCH="master"
 FUNCTION_SOURCE_DIR="do_functions"
 FUNCTION_ROUTE="/api"
 REUSE_EXISTING_APP=false
+RECREATE_EXISTING_APP=false
 FUNCTION_APP_ID=""
 FUNCTION_BASE_URL=""
 FUNCTION_ENDPOINT=""
@@ -437,6 +469,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --reuse-existing-app)
             REUSE_EXISTING_APP=true
+            shift
+            ;;
+        --recreate-existing-app)
+            RECREATE_EXISTING_APP=true
             shift
             ;;
         --help|-h)
@@ -541,13 +577,22 @@ if [[ "$CREATE_APP_FUNCTION" == true ]]; then
     create_app_spec
 
     if [[ -n "$EXISTING_APP_ID" ]]; then
-        if [[ "$REUSE_EXISTING_APP" == true ]]; then
+        if [[ "$RECREATE_EXISTING_APP" == true ]]; then
+            delete_app_and_wait "$EXISTING_APP_ID"
+            echo "Creating App Platform function app '$FUNCTION_APP_NAME'..."
+            doctl apps create --spec "$APP_SPEC_FILE" >/dev/null
+            FUNCTION_APP_ID=$(get_app_id_by_name "$FUNCTION_APP_NAME")
+            if [[ -z "$FUNCTION_APP_ID" ]]; then
+                echo "Error: app '$FUNCTION_APP_NAME' was not found after recreation" >&2
+                exit 1
+            fi
+        elif [[ "$REUSE_EXISTING_APP" == true ]]; then
             FUNCTION_APP_ID=$EXISTING_APP_ID
             echo "Updating existing app: $FUNCTION_APP_NAME ($FUNCTION_APP_ID)"
             doctl apps update "$FUNCTION_APP_ID" --spec "$APP_SPEC_FILE" >/dev/null
         else
             echo "Error: app already exists with name '$FUNCTION_APP_NAME' (ID: $EXISTING_APP_ID)" >&2
-            echo "Use --reuse-existing-app to update it instead of failing." >&2
+            echo "Use --reuse-existing-app to update it or --recreate-existing-app to delete and recreate it." >&2
             exit 1
         fi
     else
