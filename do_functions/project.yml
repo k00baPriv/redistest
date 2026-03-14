@@ -1,3 +1,6 @@
+environment:
+  REDIS_URL: "${REDIS_URL}"
+
 packages:
   - name: bench
     functions:
