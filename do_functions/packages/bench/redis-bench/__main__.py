@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import string
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -46,6 +47,12 @@ def response(status_code: int, body: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def normalized_payload_size(mean: int, stddev: float) -> int:
+    if stddev <= 0:
+        return max(1, mean)
+    return max(1, int(round(random.gauss(mean, stddev))))
+
+
 def make_payload(index: int, size: int) -> dict[str, Any]:
     alphabet = string.ascii_letters + string.digits
     payload = "".join(alphabet[(index + offset) % len(alphabet)] for offset in range(size))
@@ -56,18 +63,21 @@ def make_payload(index: int, size: int) -> dict[str, Any]:
     }
 
 
-def seed_records(count: int, payload_size: int) -> list[str]:
+def seed_records(count: int, payload_size: int, payload_stddev: float = 0.0) -> tuple[list[str], list[int]]:
     redis_client = get_redis_client()
     keys = []
+    payload_sizes = []
     pipe = redis_client.pipeline()
 
     for index in range(count):
         key = f"{KEY_PREFIX}:{index}"
-        pipe.set(key, json.dumps(make_payload(index, payload_size), separators=(",", ":")))
+        current_payload_size = normalized_payload_size(payload_size, payload_stddev)
+        pipe.set(key, json.dumps(make_payload(index, current_payload_size), separators=(",", ":")))
         keys.append(key)
+        payload_sizes.append(current_payload_size)
 
     pipe.execute()
-    return keys
+    return keys, payload_sizes
 
 
 def fetch_records(count: int) -> list[dict[str, Any]]:
@@ -130,6 +140,11 @@ def as_int(params: dict[str, str], key: str, default: int) -> int:
     return int(value)
 
 
+def as_float(params: dict[str, str], key: str, default: float) -> float:
+    value = params.get(key, str(default))
+    return float(value)
+
+
 def main(event: dict[str, Any], context: Any) -> dict[str, Any]:
     try:
         method = get_method(event)
@@ -143,12 +158,16 @@ def main(event: dict[str, Any], context: Any) -> dict[str, Any]:
         if action == "seed" or method == "POST" or path.endswith("/seed"):
             count = as_int(params, "count", DEFAULT_COUNT)
             payload_size = as_int(params, "payload_size", DEFAULT_PAYLOAD_SIZE)
-            keys = seed_records(count, payload_size)
+            payload_stddev = as_float(params, "payload_stddev", 0.0)
+            keys, payload_sizes = seed_records(count, payload_size, payload_stddev)
             return response(
                 200,
                 {
                     "seeded": len(keys),
                     "payload_size": payload_size,
+                    "payload_stddev": payload_stddev,
+                    "payload_size_min": min(payload_sizes) if payload_sizes else 0,
+                    "payload_size_max": max(payload_sizes) if payload_sizes else 0,
                     "key_prefix": KEY_PREFIX,
                     "keys": keys,
                 },

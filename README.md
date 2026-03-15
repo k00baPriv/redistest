@@ -28,6 +28,7 @@ Important: App Platform deploys from GitHub, not from your local working tree. P
 `do_functions/` is the App Platform Functions project for the same benchmark flow. The function endpoint supports:
 
 - `GET ?action=seed&count=10&payload_size=100`
+- `GET ?action=seed&count=10&payload_size=100&payload_stddev=20`
 - `GET ?action=records&count=10`
 - `GET ?action=health`
 
@@ -80,9 +81,53 @@ python3 benchmark_droplet.py \
   --seed-first \
   --requests 50 \
   --count 10 \
-  --payload-size 100
+  --payload-size 100 \
+  --payload-stddev 20
 ```
 
 This measures end-to-end latency:
 
 your computer -> App Platform function -> Redis managed DB -> function -> your computer
+
+## Current limits
+
+The App Platform function is currently configured in [do_functions/project.yml](/Users/kuba/PycharmProjects/PythonProject/redistest/do_functions/project.yml) with:
+
+- `memory: 256`
+- `timeout: 10000` ms
+
+That means very large benchmark inputs will fail at the function layer before they become a meaningful Redis benchmark.
+
+Example of an unrealistic request:
+
+```bash
+python3 benchmark_droplet.py --base-url "$FUNCTION_ENDPOINT" --seed-first --requests 50 --count 100000 --payload-size 10000
+```
+
+That attempts to seed roughly 1 GB of JSON payload, which exceeds the current function limits.
+
+Use smaller values such as:
+
+```bash
+python3 benchmark_droplet.py --base-url "$FUNCTION_ENDPOINT" --seed-first --requests 50 --count 100 --payload-size 1000
+```
+
+or:
+
+```bash
+python3 benchmark_droplet.py --base-url "$FUNCTION_ENDPOINT" --seed-first --requests 20 --count 1000 --payload-size 500
+```
+
+If you want more realistic variation in response sizes, seed with a payload-size distribution instead of a fixed size:
+
+```bash
+python3 benchmark_droplet.py \
+  --base-url "$FUNCTION_ENDPOINT" \
+  --seed-first \
+  --requests 50 \
+  --count 100 \
+  --payload-size 1000 \
+  --payload-stddev 250
+```
+
+That uses `payload-size` as the mean and `payload-stddev` as the standard deviation for a normal distribution. Payload sizes are clamped to at least 1 byte.
