@@ -40,7 +40,6 @@ python3 -m venv .venv
 source .venv/bin/activate
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -e '.[dev]'
-pip install -r requirements.txt
 ```
 
 ## 2. Configure Redis connection
@@ -81,14 +80,16 @@ Endpoints:
 Manual checks:
 
 ```bash
+source .env
 curl "$FUNCTION_ENDPOINT?action=health"
 curl "$FUNCTION_ENDPOINT?action=seed&count=10&payload_size=100&payload_stddev=20"
 curl "$FUNCTION_ENDPOINT?action=records&count=5"
 ```
 
 ```bash
+source .env
 python3 benchmark_droplet.py \
-  --base-url https://YOUR_APP_DOMAIN/api/bench/redis-bench \
+  --base-url "$FUNCTION_ENDPOINT" \
   --seed-first \
   --requests 50 \
   --count 10 \
@@ -113,6 +114,7 @@ That means very large benchmark inputs will fail at the function layer before th
 Example of an unrealistic request:
 
 ```bash
+source .env
 python3 benchmark_droplet.py --base-url "$FUNCTION_ENDPOINT" --seed-first --requests 50 --count 100000 --payload-size 10000
 ```
 
@@ -121,18 +123,21 @@ That attempts to seed roughly 1 GB of JSON payload, which exceeds the current fu
 Use smaller values such as:
 
 ```bash
+source .env
 python3 benchmark_droplet.py --base-url "$FUNCTION_ENDPOINT" --seed-first --requests 50 --count 100 --payload-size 1000
 ```
 
 or:
 
 ```bash
+source .env
 python3 benchmark_droplet.py --base-url "$FUNCTION_ENDPOINT" --seed-first --requests 20 --count 1000 --payload-size 500
 ```
 
 If you want more realistic variation in response sizes, seed with a payload-size distribution instead of a fixed size:
 
 ```bash
+source .env
 python3 benchmark_droplet.py \
   --base-url "$FUNCTION_ENDPOINT" \
   --seed-first \
