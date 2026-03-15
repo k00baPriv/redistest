@@ -75,6 +75,12 @@ def main() -> None:
     )
     parser.add_argument("--requests", type=int, default=50, help="Number of GET requests to send")
     parser.add_argument("--count", type=int, default=10, help="Number of records to fetch each time")
+    parser.add_argument(
+        "--population-size",
+        type=int,
+        default=None,
+        help="Seeded pool size to fetch from. Defaults to --count",
+    )
     parser.add_argument("--seed-first", action="store_true", help="Seed records before benchmarking")
     parser.add_argument("--payload-size", type=int, default=100, help="Mean payload size to use when seeding")
     parser.add_argument(
@@ -92,10 +98,11 @@ def main() -> None:
 
     base_url = args.base_url.rstrip("/")
     raw_output = Path(args.raw_output)
+    population_size = args.population_size if args.population_size is not None else args.count
 
     if args.seed_first:
         seed_status, seed_body = request(
-            f"{base_url}?action=seed&count={args.count}&payload_size={args.payload_size}&payload_stddev={args.payload_stddev}",
+            f"{base_url}?action=seed&count={population_size}&payload_size={args.payload_size}&payload_stddev={args.payload_stddev}",
             method="GET",
         )
         seeded = parse_json(seed_body)
@@ -115,7 +122,10 @@ def main() -> None:
     for request_number in range(1, args.requests + 1):
         started_wall_time = dt.datetime.now(dt.timezone.utc).isoformat()
         started = time.perf_counter()
-        status_code, body = request(f"{base_url}?action=records&count={args.count}", method="GET")
+        status_code, body = request(
+            f"{base_url}?action=records&count={args.count}&population_size={population_size}&randomize=true",
+            method="GET",
+        )
         elapsed_ms = (time.perf_counter() - started) * 1000
         response = parse_json(body)
 
@@ -142,6 +152,7 @@ def main() -> None:
 
     print(f"Requests: {args.requests}")
     print(f"Records per request: {args.count}")
+    print(f"Population size: {population_size}")
     print(f"Approx response size: {response_size_bytes} bytes")
     print(f"Average: {statistics.mean(samples_ms):.2f} ms")
     print(f"Median: {statistics.median(samples_ms):.2f} ms")

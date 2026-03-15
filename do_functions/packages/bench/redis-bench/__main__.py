@@ -80,9 +80,23 @@ def seed_records(count: int, payload_size: int, payload_stddev: float = 0.0) -> 
     return keys, payload_sizes
 
 
-def fetch_records(count: int) -> list[dict[str, Any]]:
+def build_fetch_indexes(count: int, population_size: int, randomize: bool) -> list[int]:
+    if population_size <= 0:
+        return []
+
+    if randomize:
+        if count <= population_size:
+            return random.sample(range(population_size), count)
+        return [random.randrange(population_size) for _ in range(count)]
+
+    return [index % population_size for index in range(count)]
+
+
+def fetch_records(count: int, population_size: int | None = None, randomize: bool = False) -> list[dict[str, Any]]:
     redis_client = get_redis_client()
-    keys = [f"{KEY_PREFIX}:{index}" for index in range(count)]
+    effective_population = population_size if population_size is not None else count
+    indexes = build_fetch_indexes(count, effective_population, randomize)
+    keys = [f"{KEY_PREFIX}:{index}" for index in indexes]
     raw_values = redis_client.mget(keys)
     records = []
 
@@ -145,6 +159,12 @@ def as_float(params: dict[str, str], key: str, default: float) -> float:
     return float(value)
 
 
+def as_bool(params: dict[str, str], key: str, default: bool = False) -> bool:
+    if key not in params:
+        return default
+    return params[key].strip().lower() in {"1", "true", "yes", "on"}
+
+
 def main(event: dict[str, Any], context: Any) -> dict[str, Any]:
     try:
         method = get_method(event)
@@ -174,11 +194,15 @@ def main(event: dict[str, Any], context: Any) -> dict[str, Any]:
             )
 
         count = as_int(params, "count", DEFAULT_COUNT)
-        records = fetch_records(count)
+        population_size = as_int(params, "population_size", count)
+        randomize = as_bool(params, "randomize", False)
+        records = fetch_records(count, population_size=population_size, randomize=randomize)
         return response(
             200,
             {
                 "count": len(records),
+                "population_size": population_size,
+                "randomize": randomize,
                 "key_prefix": KEY_PREFIX,
                 "records": records,
             },

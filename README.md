@@ -30,6 +30,7 @@ Important: App Platform deploys from GitHub, not from your local working tree. P
 - `GET ?action=seed&count=10&payload_size=100`
 - `GET ?action=seed&count=10&payload_size=100&payload_stddev=20`
 - `GET ?action=records&count=10`
+- `GET ?action=records&count=50&population_size=1000&randomize=true`
 - `GET ?action=health`
 
 ## 1. Install dependencies on the droplet
@@ -81,6 +82,7 @@ python3 benchmark_droplet.py \
   --seed-first \
   --requests 50 \
   --count 10 \
+  --population-size 100 \
   --payload-size 100 \
   --payload-stddev 20
 ```
@@ -126,8 +128,10 @@ python3 benchmark_droplet.py \
   --seed-first \
   --requests 50 \
   --count 100 \
+  --population-size 1000 \
   --payload-size 1000 \
   --payload-stddev 250
 ```
 
 That uses `payload-size` as the mean and `payload-stddev` as the standard deviation for a normal distribution. Payload sizes are clamped to at least 1 byte.
+Reads are randomized across the seeded population, so each benchmark request can return a different subset of records.
