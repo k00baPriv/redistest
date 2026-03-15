@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "redistest"
+version = "0.1.0"
+description = "DigitalOcean Redis benchmark helpers"
+requires-python = ">=3.10"
+dependencies = [
+  "redis>=5.0.0,<6.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "bandit",
+  "coverage",
+  "mypy",
+  "pip-audit",
+  "pytest",
+  "radon",
+  "ruff",
+  "vulture",
+  "xenon",
+]
+
+[tool.setuptools]
+py-modules = ["benchmark_droplet", "redis_api"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["benchmark_droplet.py", "redis_api.py", "tests"]
+check_untyped_defs = true
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true

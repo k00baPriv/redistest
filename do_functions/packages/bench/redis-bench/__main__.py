@@ -5,7 +5,6 @@ import string
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-
 KEY_PREFIX = os.getenv("REDIS_KEY_PREFIX", "bench:item")
 DEFAULT_COUNT = int(os.getenv("SEED_COUNT", "10"))
 DEFAULT_PAYLOAD_SIZE = int(os.getenv("PAYLOAD_SIZE", "100"))
@@ -63,7 +62,9 @@ def make_payload(index: int, size: int) -> dict[str, Any]:
     }
 
 
-def seed_records(count: int, payload_size: int, payload_stddev: float = 0.0) -> tuple[list[str], list[int]]:
+def seed_records(
+    count: int, payload_size: int, payload_stddev: float = 0.0
+) -> tuple[list[str], list[int]]:
     redis_client = get_redis_client()
     keys = []
     payload_sizes = []
@@ -86,13 +87,15 @@ def build_fetch_indexes(count: int, population_size: int, randomize: bool) -> li
 
     if randomize:
         if count <= population_size:
-            return random.sample(range(population_size), count)
-        return [random.randrange(population_size) for _ in range(count)]
+            return random.sample(range(population_size), count)  # nosec B311
+        return [random.randrange(population_size) for _ in range(count)]  # nosec B311
 
     return [index % population_size for index in range(count)]
 
 
-def fetch_records(count: int, population_size: int | None = None, randomize: bool = False) -> list[dict[str, Any]]:
+def fetch_records(
+    count: int, population_size: int | None = None, randomize: bool = False
+) -> list[dict[str, Any]]:
     redis_client = get_redis_client()
     effective_population = population_size if population_size is not None else count
     indexes = build_fetch_indexes(count, effective_population, randomize)
@@ -120,26 +123,19 @@ def get_method(event: dict[str, Any]) -> str:
 
 
 def get_path(event: dict[str, Any]) -> str:
-    path = (
-        event.get("http", {}).get("path")
-        or event.get("__ow_path")
-        or event.get("path")
-        or ""
-    )
+    path = event.get("http", {}).get("path") or event.get("__ow_path") or event.get("path") or ""
     return str(path)
 
 
-def get_query_params(event: dict[str, Any]) -> dict[str, str]:
-    query = event.get("http", {}).get("query") or event.get("__ow_query")
-    if isinstance(query, dict):
-        return {str(key): str(value) for key, value in query.items()}
-    if isinstance(query, str) and query:
-        return {key: values[-1] for key, values in parse_qs(query).items()}
+def normalize_query_dict(query: dict[Any, Any]) -> dict[str, str]:
+    return {str(key): str(value) for key, value in query.items()}
 
-    url = event.get("url")
-    if isinstance(url, str) and url:
-        return {key: values[-1] for key, values in parse_qs(urlparse(url).query).items()}
 
+def parse_query_string(query: str) -> dict[str, str]:
+    return {key: values[-1] for key, values in parse_qs(query).items()}
+
+
+def scalar_event_params(event: dict[str, Any]) -> dict[str, str]:
     params = {}
     for key, value in event.items():
         if key.startswith("__ow_"):
@@ -147,6 +143,20 @@ def get_query_params(event: dict[str, Any]) -> dict[str, str]:
         if isinstance(value, (str, int, float, bool)):
             params[str(key)] = str(value)
     return params
+
+
+def get_query_params(event: dict[str, Any]) -> dict[str, str]:
+    query = event.get("http", {}).get("query") or event.get("__ow_query")
+    if isinstance(query, dict):
+        return normalize_query_dict(query)
+    if isinstance(query, str) and query:
+        return parse_query_string(query)
+
+    url = event.get("url")
+    if isinstance(url, str) and url:
+        return parse_query_string(urlparse(url).query)
+
+    return scalar_event_params(event)
 
 
 def as_int(params: dict[str, str], key: str, default: int) -> int:
@@ -165,7 +175,7 @@ def as_bool(params: dict[str, str], key: str, default: bool = False) -> bool:
     return params[key].strip().lower() in {"1", "true", "yes", "on"}
 
 
-def main(event: dict[str, Any], context: Any) -> dict[str, Any]:
+def main(event: dict[str, Any], _context: Any) -> dict[str, Any]:
     try:
         method = get_method(event)
         path = get_path(event)

@@ -1,2 +1,8 @@
 /.env
 /.venv/
+/__pycache__/
+/reports/
+/benchmark_raw.csv
+/benchmark_raw.json
+/.coverage
+/redistest.egg-info/

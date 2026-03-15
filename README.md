@@ -38,6 +38,8 @@ Important: App Platform deploys from GitHub, not from your local working tree. P
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -e '.[dev]'
 pip install -r requirements.txt
 ```
 
@@ -75,6 +77,14 @@ Endpoints:
 - `GET /health`
 
 ## 4. Benchmark from your computer
+
+Manual checks:
+
+```bash
+curl "$FUNCTION_ENDPOINT?action=health"
+curl "$FUNCTION_ENDPOINT?action=seed&count=10&payload_size=100&payload_stddev=20"
+curl "$FUNCTION_ENDPOINT?action=records&count=5"
+```
 
 ```bash
 python3 benchmark_droplet.py \

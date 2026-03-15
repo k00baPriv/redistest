@@ -3,15 +3,15 @@
 import json
 import os
 import string
+from collections.abc import Sequence
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
 import redis
 
-
-HOST = os.getenv("API_HOST", "0.0.0.0")
+HOST = os.getenv("API_HOST", "0.0.0.0")  # nosec B104
 PORT = int(os.getenv("API_PORT", "8000"))
 KEY_PREFIX = os.getenv("REDIS_KEY_PREFIX", "bench:item")
 DEFAULT_COUNT = int(os.getenv("SEED_COUNT", "10"))
@@ -72,7 +72,7 @@ def seed_records(count: int, payload_size: int) -> list[str]:
 
 def fetch_records(count: int) -> list[dict[str, Any]]:
     keys = [f"{KEY_PREFIX}:{index}" for index in range(count)]
-    raw_values = REDIS.mget(keys)
+    raw_values = cast(Sequence[str | None], REDIS.mget(keys))
     records = []
 
     for key, raw_value in zip(keys, raw_values):

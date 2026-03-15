@@ -9,12 +9,17 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def request(url: str, method: str) -> tuple[int, bytes]:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"Unsupported or malformed URL: {url}")
+
     req = urllib.request.Request(url, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=30) as response:  # nosec B310
             return response.status, response.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()
@@ -67,22 +72,30 @@ def percentile(values: list[float], ratio: float) -> float:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark HTTP endpoint -> Redis retrieval latency")
+    parser = argparse.ArgumentParser(
+        description="Benchmark HTTP endpoint -> Redis retrieval latency"
+    )
     parser.add_argument(
         "--base-url",
         required=True,
         help="Example: http://203.0.113.10:8000 or https://app.example.com/api/bench/redis-bench",
     )
     parser.add_argument("--requests", type=int, default=50, help="Number of GET requests to send")
-    parser.add_argument("--count", type=int, default=10, help="Number of records to fetch each time")
+    parser.add_argument(
+        "--count", type=int, default=10, help="Number of records to fetch each time"
+    )
     parser.add_argument(
         "--population-size",
         type=int,
         default=None,
         help="Seeded pool size to fetch from. Defaults to --count",
     )
-    parser.add_argument("--seed-first", action="store_true", help="Seed records before benchmarking")
-    parser.add_argument("--payload-size", type=int, default=100, help="Mean payload size to use when seeding")
+    parser.add_argument(
+        "--seed-first", action="store_true", help="Seed records before benchmarking"
+    )
+    parser.add_argument(
+        "--payload-size", type=int, default=100, help="Mean payload size to use when seeding"
+    )
     parser.add_argument(
         "--payload-stddev",
         type=float,
@@ -131,7 +144,8 @@ def main() -> None:
 
         if status_code >= 400:
             raise RuntimeError(
-                f"Benchmark request {request_number} failed with HTTP {status_code}: {json.dumps(response)}"
+                f"Benchmark request {request_number} failed with HTTP "
+                f"{status_code}: {json.dumps(response)}"
             )
 
         samples_ms.append(elapsed_ms)
