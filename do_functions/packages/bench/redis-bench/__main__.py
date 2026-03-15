@@ -195,7 +195,7 @@ def main(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
         count = as_int(params, "count", DEFAULT_COUNT)
         population_size = as_int(params, "population_size", count)
-        randomize = as_bool(params, "randomize", False)
+        randomize = as_bool(params, "randomize", True)
         records = fetch_records(count, population_size=population_size, randomize=randomize)
         return response(
             200,
